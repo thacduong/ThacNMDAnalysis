@@ -1,172 +1,214 @@
-Thac's NMD Classification Pipeline
-==================================
+Thac’s NMD Classification Pipeline
+===================================
 
+A unified pipeline for exon extraction, ORF discovery, optional CDS/CPC2 validation, and NMD classification.
+
+----------------------------------------
 Contents
---------
+----------------------------------------
+1. Overview
+2. Features
+3. Requirements
+4. Installation
+5. Inputs
+6. Outputs
+7. NMD Rules & Coordinate Systems
+8. Usage Synopsis
+9. Typical Workflows & Examples
+10. Column Dictionaries
+
+----------------------------------------
 1) Overview
+----------------------------------------
+The pipeline performs three integrated stages:
+
+[1] Exon extraction
+    Reads a GTF file and produces an exon structure table with:
+    Transcript_ID, Chr, Exon_Start, Exon_End, Strand.
+
+[2] ORF discovery
+    Scans each transcript sequence for ATG→STOP open reading frames in all three forward frames.
+    - Default: keep the longest ORF per transcript
+    - Optional: filter ORFs to match CPC2 putative peptides
+    - Optional: replace or validate ORFs using Ensembl CDS FASTA
+
+[3] NMD classification
+    For each transcript, computes distances relevant to NMD (exon length, PTC position, junction distance)
+    and applies four heuristic rules to classify:
+    NMD-evasive or NMD-sensitive.
+
+----------------------------------------
 2) Features
+----------------------------------------
+- Works with both de novo (StringTie/TACO) and reference (Ensembl) annotations.
+- Accepts any transcript FASTA (cDNA or assembled).
+- Can automatically generate transcript FASTA from a genome FASTA using pybedtools + BEDTools.
+- ORF extraction finds all ATG→STOP ORFs in frames 1–3.
+- Optional CPC2 filtering keeps ORFs matching CPC2 "putative_peptide".
+- Optional CDS validation replaces ORFs with canonical CDS sequences and marks Match_CDS flags.
+- NMD classification provides all rule flags, distances, and final status.
+
+----------------------------------------
 3) Requirements
-4) Installation
-5) Inputs
-6) Outputs
-7) NMD rules & coordinate systems
-8) Usage synopsis
-9) Typical workflows & examples
-10) Column dictionaries
+----------------------------------------
+Mandatory:
+- Python 3.8 or newer
+- pandas
+- biopython
 
-----------------------------------
-1) Overview
-----------------------------------
-The pipeline performs three stages:
+Install (local/HPC):
+    pip install --user pandas biopython
 
-[1] Exon extraction — parse a GTF and emit an exon table (one row per exon, with transcript_id, chr, start, end, strand).  
-[2] ORF discovery — scan each transcript sequence for ATG…STOP ORFs in all three frames (on the forward orientation of the provided sequence). Optionally filter/align to CPC2 putative peptides and/or validate/replace with Ensembl CDS.  
-[3] NMD classification — map the PTC (stop codon) to transcript and genomic positions, compute distances to the last exon junction, and apply a 4‑rule heuristic to label each transcript as NMD-evasive or NMD-sensitive.
+If using genome FASTA auto-build (-r):
+- pybedtools
+- BEDTools (must include fastaFromBed)
 
-----------------------------------
-2) Features
-----------------------------------
-- Accepts either de novo or reference inputs; Ensembl files are supported via dedicated flags.
-- Exon table is produced from the supplied GTF, requiring standard attributes with `transcript_id`.
-- ORFs: finds all candidate ORFs (start at 'M', stops at '*') per frame; by default keeps the **longest** ORF per transcript unless a CPC2 file is provided.
-- Optional CPC2 integration: matches predicted AA sequences to `putative_peptide` and keeps only exact matches.
-- Optional validation with Ensembl CDS: if a transcript’s CDS is available, the ORF’s NT/AA are replaced by CDS (and a `Match_CDS` flag indicates exact match vs replacement).
-- NMD rules computed from exon structure and ORF endpoints; outputs interpretable distances and rule flags.
-
-----------------------------------
-3) Requirements
-----------------------------------
-- Python ≥ 3.8
-- Packages: `pandas`, `biopython`
-  - Install with: `pip install pandas biopython`
+Install:
+    pip install --user pybedtools
+    module load BEDTools
 
 Optional:
-- A CPC2 TSV output containing columns `#ID` and `putative_peptide`.
-- Ensembl cDNA FASTA, GTF, and CDS FASTA for validation checks.
+- CPC2 output TSV (columns: "#ID", "putative_peptide")
+- Ensembl CDS FASTA
 
-----------------------------------
+----------------------------------------
 4) Installation
-----------------------------------
-No special installation is required beyond Python and the packages above. Save the script (e.g., `nmd_pipeline.py`) and run it with `python nmd_pipeline.py <args>`.
+----------------------------------------
+Save the script (e.g., nmd_classify_clean.py)
+Run with:
 
-----------------------------------
+    python nmd_classify_clean.py <arguments>
+
+----------------------------------------
 5) Inputs
-----------------------------------
-Exactly one transcript FASTA and one GTF must be provided, either via generic flags or Ensembl-specific flags. Ensembl flags take precedence if both are set.
+----------------------------------------
+Required:
+- -g / --gtf
+  GTF annotation containing exon features with transcript_id
 
-- `-f/--fasta`           Transcript FASTA (spliced, 5'→3' orientation; typically cDNA-like).  
-- `-g/--gtf`             Transcript GTF with `exon` features and `transcript_id` attributes.  
-- `-c/--cpc2`            Optional CPC2 output TSV (columns `#ID`, `putative_peptide` at minimum).  
-- `-fg/--cdna_fasta`     Ensembl cDNA FASTA. If set, overrides `-f`.  
-- `-gg/--ensembl_gtf`    Ensembl GTF. If set, overrides `-g`.  
-- `-cg/--cds_fasta`      Ensembl CDS FASTA for ORF validation/replacement. Optional.
+Plus one of the following:
+- -f / --fasta
+  Transcript FASTA (spliced, 5'→3')
+OR
+- -r / --reference_fasta
+  Genome FASTA (pipeline will auto-build transcripts)
 
-Outputs (exactly three paths required via `-o/--outputs`):
-- `orf_out`  (TSV)   — per-transcript ORF table (possibly CPC2-filtered and/or CDS-validated).
-- `exon_out` (TSV)   — exon table derived from the GTF.  
-- `nmd_out`  (CSV)   — final NMD calls and supporting metrics.
+Optional:
+- -c / --cpc2        CPC2 TSV file
+- -cg / --cds_fasta  Ensembl CDS FASTA for validation
 
-----------------------------------
+Deprecated but accepted:
+- -fg / --cdna_fasta
+- -gg / --ensembl_gtf
+
+Output files (three required):
+    -o ORF.tsv EXON.tsv NMD.csv
+
+----------------------------------------
 6) Outputs
-----------------------------------
-[1] ORF table (TSV): One row per transcript after optional filters/validation. Includes frame, transcript-based start/stop, AA/NT sequences, and (if CDS provided) `Match_CDS` boolean.
-[2] Exon table (TSV): One row per exon with transcript ID, chromosome, exon start, exon end, and strand.
-[3] NMD table (CSV): One row per transcript with genomic and transcript coordinates of the stop codon, distances to last exon junction, rule flags, and final `NMD_Status` label.
+----------------------------------------
+1) ORF table (TSV)
+   Includes Transcript_ID, Frame, Start/Stop, AA_Seq, NT_Seq, optional Match_CDS
 
-----------------------------------
-7) NMD rules & coordinate systems
-----------------------------------
+2) Exon table (TSV)
+   One row per exon: Transcript_ID, Chr, Exon_Start, Exon_End, Strand
+
+3) NMD table (CSV)
+   Genomic/transcript ORF coordinates, distances, rule flags, NMD_Status
+
+----------------------------------------
+7) NMD Rules & Coordinate Systems
+----------------------------------------
 Coordinate systems:
-- Transcript coordinates are **1-based, inclusive**.
-- Genomic coordinates are reported based on exon mapping using the transcript’s strand from the GTF.
-- The FASTA is assumed to be the spliced transcript in 5'→3'. The ORF finder scans this orientation in frames 1–3.
+- Transcript coordinates: 1-based, inclusive
+- Genomic mapping uses strand from GTF
+- FASTA inputs assumed spliced and 5'→3'
 
-Rules (applied to the detected STOP position; if any rule is true → **NMD-evasive**, else **NMD-sensitive**):
-- **Rule_PTC_<150nt**: Distance from start codon to STOP < 150 nt.
-- **Rule_Exon>407nt**: STOP lies in an exon with length ≥ 407 nt.
-- **Rule_<55nt_to_Junction**: STOP is < 55 nt upstream of the last exon–exon junction.
-- **Rule_Last_Exon**: STOP is in the last exon.
+NMD-evasion rules (any TRUE → NMD-evasive):
+1. Rule_PTC_<150nt
+   Stop codon <150 nt from start codon
+2. Rule_Exon>407nt
+   Stop lies in an exon >= 407 nt
+3. Rule_<55nt_to_Junction
+   Stop <55 nt upstream of last exon–exon junction
+4. Rule_Last_Exon
+   Stop codon in last exon
 
-Thresholds (150/407/55) are conventional heuristics and can be edited in the code if needed.
+Else → NMD-sensitive.
 
-----------------------------------
-8) Usage synopsis
-----------------------------------
-```
-python nmd_pipeline.py \
-  [-f FASTA | -fg ENSEMBL_cDNA_FASTA] \
-  [-g GTF   | -gg ENSEMBL_GTF] \
-  [-c CPC2_TSV] \
-  [-cg ENSEMBL_CDS_FASTA] \
-  -o ORF.tsv EXON.tsv NMD.csv
-```
+----------------------------------------
+8) Usage Synopsis
+----------------------------------------
+General:
 
-Precedence:
-- If `-fg` is supplied, it is used instead of `-f`.
-- If `-gg` is supplied, it is used instead of `-g`.
+    python nmd_classify_clean.py         -g GTF         (-f TRANSCRIPTS.fa | -r GENOME.fa)         [-c CPC2.tsv]         [-cg CDS.fa]         -o ORF.tsv EXON.tsv NMD.csv
 
-----------------------------------
-9) Typical workflows & examples
-----------------------------------
-A) De novo transcripts (no CPC2, no Ensembl validation)
-```
-python nmd_pipeline.py \
-  -f transcripts.fa \
-  -g transcripts.gtf \
-  -o orf.tsv exon.tsv nmd.csv
-```
+Notes:
+- If -f is missing but -r is provided, transcript FASTA is auto-generated.
+- -fg and -gg still work but are deprecated.
 
-B) With CPC2 filtering (keep ORFs matching CPC2 `putative_peptide` exactly)
-```
-python nmd_pipeline.py \
-  -f transcripts.fa \
-  -g transcripts.gtf \
-  -c cpc2_output.tsv \
-  -o orf.tsv exon.tsv nmd.csv
-```
+----------------------------------------
+9) Typical Workflows & Examples
+----------------------------------------
 
-C) Ensembl reference, with CDS validation/replacement
-```
-python nmd_pipeline.py \
-  -fg Homo_sapiens.GRCh38.cdna.all.fa.gz \
-  -gg Homo_sapiens.GRCh38.111.gtf.gz \
-  -cg Homo_sapiens.GRCh38.cds.all.fa.gz \
-  -o orf.tsv exon.tsv nmd.csv
-```
-In (C), if a transcript’s CDS is available:
-- If ORF NT equals CDS NT → `Match_CDS = True` (no change).  
-- Else the ORF NT/AA are **replaced** by the Ensembl CDS and `Match_CDS = False`.
+A) Ensembl reference with CDS validation:
 
-----------------------------------
-10) Column dictionaries
-----------------------------------
-Exon table (TSV: `exon_out`):
-- `Transcript_ID`  — transcript identifier from GTF `transcript_id` attribute (version-stripped).  
-- `Chr`            — chromosome name (string).  
-- `Exon_Start`     — exon start (1-based, inclusive).  
-- `Exon_End`       — exon end (1-based, inclusive).  
-- `Strand`         — `+` or `-`.
+    python nmd_classify_clean.py         -g Homo_sapiens.GRCh38.114.gtf         -f Homo_sapiens.GRCh38.cdna.all.fa         -cg Homo_sapiens.GRCh38.cds.all.fa         -o orf.tsv exon.tsv nmd.csv
 
-ORF table (TSV: `orf_out`):
-- `Transcript_ID`  — version-stripped FASTA ID (matches GTF transcript_id when possible).  
-- `Strand`         — always `+` (the ORF scan is on the provided 5'→3' transcript sequence).  
-- `Frame`          — 1, 2, or 3 (offset of the ORF within the transcript).  
-- `Start`          — ORF start in transcript coordinates (1-based).  
-- `Stop`           — ORF stop in transcript coordinates (1-based; if no STOP was found, this is the sequence end).  
-- `Length`         — ORF nucleotide length.  
-- `AA_Seq`         — amino acid sequence (no terminal `*`).  
-- `NT_Seq`         — nucleotide sequence of the ORF.  
-- `Match_CDS`      — (only if `-cg` used) `True` if NT_Seq == CDS; `False` if replaced by CDS; missing otherwise.
+B) De novo transcriptome (StringTie/TACO):
 
-NMD table (CSV: `nmd_out`):
-- `Transcript_ID`  
-- `Genomic_Start`, `Genomic_Stop` — genomic positions of the ORF start/stop mapped through exon structure.  
-- `Transcript_Start`, `Transcript_Stop` — transcript positions of ORF start/stop (1-based).  
-- `Chr`, `Strand`  
-- `Distance_From_Start_Codon` — nt from ATG to STOP.  
-- `PTC_Exon_Length` — length of the exon containing STOP.  
-- `Distance_To_Last_Exon_Junction` — nt from STOP to the last exon–exon junction upstream in the transcript.  
-- `PTC_in_Last_Exon` — boolean.  
-- `AA_Seq`, `NT_Seq`  
-- `NMD_Status` — `"NMD-evasive"` if any rule is true; else `"NMD-sensitive"`.  
-- `Rule_PTC_<150nt`, `Rule_Exon>407nt`, `Rule_<55nt_to_Junction`, `Rule_Last_Exon` — per-rule booleans.
+    python nmd_classify_clean.py         -g taco_merged.gtf         -f taco_merged.fa         -o orf.tsv exon.tsv nmd.csv
+
+C) Auto-build transcript FASTA from genome:
+
+    python nmd_classify_clean.py         -g Homo_sapiens.GRCh38.114.gtf         -r Homo_sapiens.GRCh38.dna.primary_assembly.fa         -o orf.tsv exon.tsv nmd.csv
+
+D) Using CPC2 filtering:
+
+    python nmd_classify_clean.py         -g transcripts.gtf         -f transcripts.fa         -c cpc2_output.tsv         -o orf.tsv exon.tsv nmd.csv
+
+----------------------------------------
+10) Column Dictionaries
+----------------------------------------
+
+Exon table (exon_out):
+- Transcript_ID
+- Chr
+- Exon_Start
+- Exon_End
+- Strand
+
+ORF table (orf_out):
+- Transcript_ID
+- Strand (always +)
+- Frame (1–3)
+- Start (transcript coordinate)
+- Stop (transcript coordinate)
+- Length
+- AA_Seq
+- NT_Seq
+- Match_CDS (optional)
+
+NMD table (nmd_out):
+- Transcript_ID
+- Genomic_Start
+- Genomic_Stop
+- Transcript_Start
+- Transcript_Stop
+- Chr
+- Strand
+- Distance_From_Start_Codon
+- PTC_Exon_Length
+- Distance_To_Last_Exon_Junction
+- PTC_in_Last_Exon
+- AA_Seq
+- NT_Seq
+- NMD_Status
+- Rule_PTC_<150nt
+- Rule_Exon>407nt
+- Rule_<55nt_to_Junction
+- Rule_Last_Exon
+
+----------------------------------------
+End of README
+----------------------------------------
